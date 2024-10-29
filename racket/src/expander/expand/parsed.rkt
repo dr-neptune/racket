@@ -37,11 +37,13 @@
 (struct parsed-#%declare parsed () #:authentic)
 (struct parsed-require parsed (portal-syms) #:authentic)
 
-(struct parsed-#%module-begin parsed (body realm) #:authentic)
+(struct parsed-#%module-begin parsed (body realm flatten-requires?) #:authentic)
 (struct parsed-module parsed (star?
                               name-id
                               self
                               requires
+                              recur-requires
+                              flattened-requires    ; #f or a list of lists
                               provides
                               root-ctx-simple?
                               encoded-root-ctx
@@ -50,4 +52,7 @@
                               portal-syntaxes       ; phase -> symbol -> syntax-object
                               compiled-module       ; #f or already-compiled module
                               compiled-submodules)  ; already-compiled submodules
+  #:authentic)
+
+(struct parsed-bundle parsed (bundle)
   #:authentic)

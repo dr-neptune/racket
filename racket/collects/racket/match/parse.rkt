@@ -3,10 +3,18 @@
 (require racket/struct-info
          racket/syntax
          racket/list
+         racket/stxparam-exptime
          "patterns.rkt"
          "parse-helper.rkt"
          "parse-quasi.rkt"
-         (for-template (only-in "runtime.rkt" matchable? mlist? mlist->list)
+         (only-in "stxtime.rkt" current-form-name)
+         (for-template (only-in "runtime.rkt" matchable? pregexp-matcher mlist? mlist->list
+                                undef user-def
+                                hash-state
+                                hash-state-step hash-shortcut-step
+                                invoke-thunk
+                                hash-state-closed? hash-state-residue
+                                hash-pattern-optimized?)
                        (only-in racket/unsafe/ops unsafe-vector-ref)
                        racket/base))
 
@@ -52,51 +60,140 @@
           (rest suffix)
           (if (eq? ddk-size #t) 0 ddk-size)))
 
-;; ht-trans-fallback :: syntax? stx-list? (or/c #f cons?)
-(define (ht-trans-fallback stx ps dd)
-  (trans-match
-   #'hash?
-   #'(lambda (e) (hash-map e list))
-   (with-syntax ([(elems ...) (map ht-pat-transform (syntax->list ps))])
-     (parse (quasisyntax/loc stx
-              (list-no-order elems ...
-                             #,@(if dd
-                                    (list (ht-pat-transform (car dd)) (cdr dd))
-                                    '())))))))
+;; do-hash :: syntax? stx-list? (or/c #t #f syntax?) -> syntax?
+;; mode: #t for closed, #f for open, syntax? for rest pattern
+;;
+;; Design note: we want the "simple case" to be as simple as possible, so:
+;;
+;;   (hash* [k1 p1] [k2 p2])
+;;
+;; should be equivalent to
+;;
+;;   (and (? hash?)
+;;        (ref k1 p1)
+;;        (ref k2 p2))
+;;
+;; where ref does the hash-ref and the matching.
+;;
+;; In this pattern:
+;;
+;; 1. k1 is evaluated.
+;; 2. (hash-ref ht k1) is performed
+;; 3. (hash-ref ht k1) is matched against p1
+;; 4. k2 is evaluated.
+;; 5. (hash-ref ht k2) is performed
+;; 6. (hash-ref ht k2) is matched against p2
+;;
+;; Step (2) could fail because there is no key in ht.
+;; Step (3) could fail because p1 doesn't match the value.
+;; When these failures occur, subsequent steps are short-circuited.
+;; The general case should preserve this behavior.
 
-(define default-val (gensym))
+(define (do-hash stx kvps init-mode)
+  (define optimized? (syntax-parameter-value #'hash-pattern-optimized?))
+  (define mode
+    (if (and optimized?
+             (syntax? init-mode)
+             (eq? (syntax-e init-mode) '_))
+        #f
+        init-mode))
+  (define kvp-list (syntax->list kvps))
+  (define-values (k-exprs v-pats def-exprs def-ids)
+    (for/fold ([k-exprs '()]
+               [v-pats '()]
+               [def-exprs '()]
+               [def-ids '()]
+               #:result (values (reverse k-exprs)
+                                (reverse v-pats)
+                                (reverse def-exprs)
+                                (reverse def-ids)))
+              ([kvp (in-list kvp-list)])
+      (syntax-case kvp ()
+        [(k-expr v-pat #:default def-expr)
+         (values (cons #'k-expr k-exprs)
+                 (cons #'v-pat v-pats)
+                 (cons #'def-expr def-exprs)
+                 (cons #'user-def def-ids))]
+        [(k-expr v-pat)
+         (values (cons #'k-expr k-exprs)
+                 (cons #'v-pat v-pats)
+                 (cons #'undef def-exprs)
+                 (cons #'undef def-ids))]
+        [_ (raise-syntax-error #f "expect a key-value group" stx kvp)])))
 
-;; ht-trans :: syntax? stx-list? (or/c #f cons?)
-;; precondition: dd's car is either #'_ or #'(_ _) and
-;;               dd's cdr is either #'... or #'..0
-(define (ht-trans stx ps dd)
-  ;; do-literal-keys :: list? list? stx-list?
-  (define (do-literal-keys keys preds vs)
-    (trans-match*
-     (append (list #'hash?)
-             preds
-             (for/list ([k (in-list keys)]) (λ (e) #`(hash-has-key? #,e '#,k))))
-     (for/list ([k (in-list keys)]) (λ (e) #`(hash-ref #,e '#,k)))
-     (map parse (syntax->list vs))))
-
-  (syntax-case ps ()
-    [((k v) ...)
-     (andmap (λ (p) (and (literal-pat? p) (not (identifier? p)))) (syntax->list #'(k ...)))
-     (let ([keys (map Exact-v (map literal-pat? (syntax->list #'(k ...))))])
-       (define preds
-         (cond
-           [dd '()]
-           [else (list (λ (e) #`(= (hash-count #,e) #,(length keys))))]))
+  (cond
+    ;; Simple case for the open mode.
+    ;; Since we know that there is no "final pattern", we do not need to
+    ;; accumulate anything, thus being able to avoid the nested App.
+    [(and optimized? (not mode))
+     (OrderedAnd
+      (cons (Pred #'hash?)
+            (for/list ([k-expr (in-list k-exprs)]
+                       [v-pat (in-list v-pats)]
+                       [def-expr (in-list def-exprs)])
+              (with-syntax ([k-expr k-expr]
+                            [def-expr def-expr])
+                (App #'(hash-shortcut-step k-expr (λ () def-expr))
+                     (list (Exact #f) (App #'invoke-thunk (list (parse v-pat)))))))))]
+    ;; General case
+    ;;
+    ;; To short-circuit, we use the following strategy:
+    ;;
+    ;;   (hash* [k1 p1] [k2 p2])
+    ;;
+    ;; is expanded to the nested App:
+    ;;
+    ;;   (App setup (list (App f1 (list #f p1 (App f2 (list #f p2 final))))))
+    ;;
+    ;; where fi evaluates ki, uses hash-ref on it, and returns three values:
+    ;;
+    ;; - The first value indicates that there's a failure due to key not present.
+    ;;   (so we want this value to be #f to continue the matching)
+    ;; - The second value is the value associated with ki, which is to be matched
+    ;;   against pi.
+    ;; - The third value is an updated state, which is passed to the next
+    ;;   nested App.
+    ;;
+    ;; A state consists of the hash table, a list of accumulated keys,
+    ;; and a list of accumulated values. setup transforms the hash table value
+    ;; into the initial state. final accepts the final state and makes a check
+    ;; on the accumulated keys and values for the residue mode or
+    ;; the closed mode.
+    [else
+     (define final-pat
        (cond
-         ;; There's a dd
-         [dd
-          (do-literal-keys keys preds #'(v ...))]
-         ;; There is no dd and there is no duplicate.
-         [(eq? default-val (check-duplicates keys #:default default-val))
-          (do-literal-keys keys preds #'(v ...))]
-         ;; There is no dd, but there is a duplicate
-         [else (ht-trans-fallback stx ps dd)]))]
-    [_ (ht-trans-fallback stx ps dd)]))
+         ;; rest pattern
+         [(syntax? mode)
+          (App #'hash-state-residue (list (parse mode)))]
+         ;; closed mode
+         [mode (Pred #'hash-state-closed?)]
+         ;; open mode -- technically dead code, but keep it as a
+         ;; "reference implementation"
+         [else (Dummy stx)]))
+
+     (OrderedAnd
+      (list (Pred #'hash?)
+            (App #'(λ (ht) (hash-state ht '() '()))
+                 (list (for/foldr ([pat-acc final-pat])
+                                  ([k-expr (in-list k-exprs)]
+                                   [v-pat (in-list v-pats)]
+                                   [def-expr (in-list def-exprs)]
+                                   [def-id (in-list def-ids)])
+                         (with-syntax ([k-expr k-expr]
+                                       [def-expr def-expr]
+                                       [def-id def-id])
+                           (App #'(hash-state-step k-expr (λ () def-expr) def-id)
+                                (list (Exact #f)
+                                      (App #'invoke-thunk (list (parse v-pat)))
+                                      pat-acc))))))))]))
+
+(define (make-kvps stx xs)
+  (let loop ([xs (syntax->list xs)] [acc '()])
+    (cond
+      [(empty? xs) (reverse acc)]
+      [(empty? (rest xs))
+       (raise-syntax-error #f "key does not have a value" stx)]
+      [else (loop (rest (rest xs)) (cons (list (first xs) (second xs)) acc))])))
 
 ;; parse : syntax -> Pat
 ;; compile stx into a pattern, using the new syntax
@@ -106,7 +203,8 @@
   (define disarmed-stx (syntax-disarm stx orig-insp))
   (syntax-case* disarmed-stx (not var struct box cons list vector ? and or quote app
                                   regexp pregexp list-rest list-no-order hash-table
-                                  quasiquote mcons list* mlist)
+                                  quasiquote mcons list* mlist
+                                  hash hash*)
                 (lambda (x y) (eq? (syntax-e x) (syntax-e y)))
     [(expander . args)
      (and (identifier? #'expander)
@@ -137,15 +235,11 @@
      (trans-match #'matchable? #'(lambda (e) (regexp-match r e)) (parse #'p))]
     [(pregexp r)
      (trans-match #'matchable?
-                  (rearm
-                   #'(lambda (e)
-                       (regexp-match (if (pregexp? r) r (pregexp r)) e)))
+                  #`(pregexp-matcher r '#,(current-form-name))
                   (Pred #'values))]
     [(pregexp r p)
      (trans-match #'matchable?
-                  (rearm 
-                   #'(lambda (e)
-                       (regexp-match (if (pregexp? r) r (pregexp r)) e)))
+                  #`(pregexp-matcher r '#,(current-form-name))
                   (rearm+parse #'p))]
     [(box e) (Box (parse #'e))]
     [(vector es ...)
@@ -153,14 +247,20 @@
      (let-values ([(prefix suffix ddk-size) (split-one-wildcard-ddk (syntax->list #'(es ...)))])
        (define prefix-len (length prefix))
        (define suffix-len (length suffix))
-       (trans-match
-        #`(λ (e) (and (vector? e) (>= (vector-length e) #,(+ prefix-len suffix-len ddk-size))))
-        #`(λ (e)
-            (define vec-len (vector-length e))
-            (for/list ([idx (in-sequences (in-range #,prefix-len)
-                                          (in-range (- vec-len #,suffix-len) vec-len))])
-              (unsafe-vector-ref e idx)))
-        (rearm+parse (quasisyntax/loc stx (list #,@prefix #,@suffix)))))]
+       (define pre+suf-len (+ prefix-len suffix-len))
+       (trans-match*
+        (list #`(λ (e)
+                  (and (vector? e)
+                       (>= (vector-length e) #,(+ pre+suf-len ddk-size)))))
+        (for/list ([idx (in-range pre+suf-len)])
+          #`(λ (e)
+              (define vec-len (vector-length e))
+              (unsafe-vector-ref
+               e
+               #,(if (< idx prefix-len)
+                     idx
+                     #`(+ vec-len #,(- idx pre+suf-len))))))
+        (map parse (append prefix suffix))))]
     [(vector es ...)
      (ormap ddk? (syntax->list #'(es ...)))
      (trans-match #'vector?
@@ -169,45 +269,57 @@
     [(vector es ...)
      (Vector (map rearm+parse (syntax->list #'(es ...))))]
 
-    ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-    ;; HASH TABLE
-    ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+    ;; Hash table patterns
+    [(hash* kvp ... #:rest rest-pat) (do-hash stx #'(kvp ...) #'rest-pat)]
+    [(hash* kvp ... #:closed) (do-hash stx #'(kvp ...) #t)]
+    [(hash* kvp ... #:open) (do-hash stx #'(kvp ...) #f)]
+    [(hash* kvp ...) (do-hash stx #'(kvp ...) #f)]
 
-    ;; x ..k is used and k >= 1; use the fallback method
-    [(hash-table p ... x dd)
-     (let ([ddk-size (ddk? #'dd)]) (and (number? ddk-size) (>= ddk-size 1)))
-     (ht-trans-fallback stx #'(p ...) (cons #'x #'dd))]
+    [(hash es ... #:rest rest-pat)
+     (with-syntax ([(kvp ...) (make-kvps stx #'(es ...))])
+       (do-hash stx #'(kvp ...) #'rest-pat))]
+    [(hash es ... #:closed)
+     (with-syntax ([(kvp ...) (make-kvps stx #'(es ...))])
+       (do-hash stx #'(kvp ...) #t))]
+    [(hash es ... #:open)
+     (with-syntax ([(kvp ...) (make-kvps stx #'(es ...))])
+       (do-hash stx #'(kvp ...) #f))]
+    [(hash es ...)
+     (with-syntax ([(kvp ...) (make-kvps stx #'(es ...))])
+       (do-hash stx #'(kvp ...) #t))]
 
-    ;; _ ..0
-    [(hash-table p ... x dd)
-     (and (ddk? #'dd) (underscore? #'x))
-     (ht-trans stx #'(p ...) (cons #'x #'dd))]
-
-    ;; (_ _) ..0
-    [(hash-table p ... (x y) dd)
-     (and (ddk? #'dd) (underscore? #'x) (underscore? #'y))
-     (ht-trans stx #'(p ...) (cons #'(x y) #'dd))]
-
-    ;; x ..0; use the fallback method
-    [(hash-table p ... x dd)
+    ;; Deprecated hash table patterns
+    [(hash-table p ... dd)
      (ddk? #'dd)
-     (ht-trans-fallback stx #'(p ...) (cons #'x #'dd))]
-
-    ;; malformed ..k
+     (trans-match
+      #'hash?
+      #'(lambda (e) (hash-map e list))
+      (with-syntax ([(elems ...)
+                     (map ht-pat-transform (syntax->list #'(p ...)))])
+        (rearm+parse (syntax/loc stx (list-no-order elems ... dd)))))]
     [(hash-table p ...)
      (ormap ddk? (syntax->list #'(p ...)))
      (raise-syntax-error
       'match "dot dot k can only appear at the end of hash-table patterns" stx
       (ormap (lambda (e) (and (ddk? e) e)) (syntax->list #'(p ...))))]
-
-    ;; ..k is not used
+    [(hash-table (k0 v0) (k1 v1) ...)
+     (andmap (λ (p) (and (literal-pat? p) (not (identifier? p)))) (syntax->list #'(k0 k1 ...)))
+     (with-syntax ([(k ...) #'(k0 k1 ...)]
+                   [(v ...) #'(v0 v1 ...)])
+       (let ([keys (map Exact-v (map literal-pat? (syntax->list #'(k ...))))])
+         (trans-match*
+          (cons #'hash? (for/list ([k (in-list keys)]) (λ (e) #`(hash-has-key? #,e '#,k))))
+          (for/list ([k (in-list keys)]) (λ (e) #`(hash-ref #,e '#,k)))
+          (map parse (syntax->list #'(v ...))))))]
     [(hash-table p ...)
-     (ht-trans stx #'(p ...) #f)]
-
-    ;; malformed hash-table
+     (trans-match #'hash?
+                  #'(lambda (e) (hash-map e list))
+                  (with-syntax ([(elems ...)
+                                 (map ht-pat-transform
+                                      (syntax->list #'(p ...)))])
+                    (rearm+parse (syntax/loc stx (list-no-order elems ...)))))]
     [(hash-table . _)
      (raise-syntax-error 'match "syntax error in hash-table pattern" stx)]
-
     [(list-no-order p ... lp dd)
      (ddk? #'dd)
      (let* ([count (ddk? #'dd)]

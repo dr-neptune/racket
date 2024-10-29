@@ -79,6 +79,13 @@
                        (struct s (x)
                          #:property prop:procedure 0)
                        (s (lambda (x) x)))))
+(define test-param6 (let ()
+                      (struct s (x)
+                         #:property prop:procedure 0)
+                      (make-derived-parameter
+                       test-param5
+                       (s (lambda (x) x))
+                       (s (lambda (x) x)))))
 
 (test 'one test-param1)
 (test 'two test-param2) 
@@ -136,6 +143,10 @@
 (test 'five test-param5)
 (test (void) test-param5 5)
 (test 5 test-param5)
+
+(test 5 test-param6)
+(test (void) test-param6 6)
+(test 6 test-param6)
 
 (let ([cd (make-derived-parameter current-directory values values)])
   (test (current-directory) cd)
@@ -598,6 +609,42 @@
       (get-repctx-error-message 2))
 (test #f regexp-match? #rx"[.][.][.]\n"
       (get-repctx-error-message 16))
+
+;; ----------------------------------------
+;; tests for `error-value->string-handler` and the way
+;; it's called by functions like `error`
+
+;; parameterization
+(test "test: got it\n  value: #<unreadable>"
+      (lambda ()
+        (struct unreadable ())
+        (parameterize ([error-value->string-handler
+                        (lambda (v _)
+                          ((error-value->string-handler) v 100))]
+                       [print-unreadable #f])
+          (with-handlers ([exn:fail:contract? exn-message])
+            (raise-arguments-error 'test "got it"
+                                   "value" (unreadable))))))
+
+;; truncate over-long result
+(test "test: got it\n  value: xxxxxxxxxx"
+      (lambda ()
+        (parameterize ([error-value->string-handler
+                        (lambda (v n)
+                          (make-string (* 2 n) #\x))]
+                       [error-print-width 10])
+          (with-handlers ([exn:fail:contract? exn-message])
+            (raise-arguments-error 'test "got it"
+                                   "value" 'any)))))
+
+(test "test: got it\n  value: oops"
+      (lambda ()
+        (parameterize ([error-value->string-handler
+                        (lambda (v n)
+                          #"oops")])
+          (with-handlers ([exn:fail:contract? exn-message])
+            (raise-arguments-error 'test "got it"
+                                   "value" 'any)))))
 
 ;; ----------------------------------------
 

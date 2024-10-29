@@ -4,8 +4,9 @@
           "common.rkt" 
           (for-label racket/runtime-path
                      racket/base
+                     racket/contract
                      launcher/launcher
-                     rackunit/log
+                     raco/testing
                      compiler/module-suffix
                      compiler/cm))
 
@@ -192,7 +193,7 @@ The @exec{raco test} command accepts several flags:
  @item{@DFlag{table} or @Flag{t}
        --- Print a summary table after all tests. If a test uses
        @racketmodname[rackunit], or if a test at least uses
-       @racket[test-log!] from @racketmodname[rackunit/log] to log
+       @racket[test-log!] from @racketmodname[raco/testing] to log
        successes and failures, the table reports test and failure
        counts based on the log.}
 
@@ -378,4 +379,48 @@ the test's output is prefixed with a
 
 line.
 
+@section{Logging Test Results}
+@defmodule[raco/testing]
+
+This module provides a general purpose library for tracking test results
+and displaying a summary message. The command @exec{raco test} uses this library
+to display test results. Therefore, any testing framework that wants to integrate
+with @exec{raco test} should also use this library to log test results.
+
+@history[#:added "1.13"]
+
+@defproc[(test-log! [result any/c]) void?]{
+ Adds a test result to the running log. If @racket[result] is false,
+ then the test is considered a failure.}
+
+@defproc[(test-report [#:display? display? any/c #f]
+                      [#:exit? exit? any/c #f])
+         (cons/c exact-nonnegative-integer?
+                 exact-nonnegative-integer?)]{
+ Processes the running test log. The first integer is the failed tests, the
+ second is the total tests. If @racket[display?] is true, then a message is
+ displayed. If there were failures, the message is printed on
+ @racket[(current-error-port)]. If @racket[exit?] is true, then if there were
+ failures, calls @racket[(exit 1)].}
+
+@defboolparam[test-log-enabled? enabled? #:value #t]{
+ When set to @racket[#f], @racket[test-log!] is a no-op. This is useful to
+ dynamically disable certain tests whose failures are expected and shouldn't be
+ counted in the test log, such as when testing a custom check's failure
+ behavior.}
+
+@defparam*[current-test-invocation-directory
+            path
+            (or/c #f path-string?)
+            (or/c #f path?)
+            #:value #f]{
+Contains the directory from which tests were invoked by, @emph{e.g.}, @exec{raco
+test}. This may differ from @racket[current-directory] when the test runner
+changes directory before invoking a specific test file and should be set by test
+runners to reflect the directory from which they were originally invoked.
+
+This should be used by test reports to display appropriate path names.
+
+@history[#:added "1.14"]
+}
 

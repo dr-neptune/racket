@@ -245,6 +245,13 @@
   (test-bin #t unsafe-char>=? #\2 #\2 #:branch? #t)
   (test-bin #t unsafe-char>=? #\2 #\1 #:branch? #t)
 
+  ;; not inlined by BC JIT, but make sure there's no crash:
+  (test-tri #t unsafe-char=? #\1 #\1 #\1 #:branch? #t)
+  (test-tri #t unsafe-char<? #\1 #\2 #\3 #:branch? #t)
+  (test-tri #t unsafe-char>? #\3 #\2 #\1 #:branch? #t)
+  (test-tri #t unsafe-char<=? #\1 #\1 #\1 #:branch? #t)
+  (test-tri #t unsafe-char>=? #\1 #\1 #\1 #:branch? #t)
+
   (test-un 49 unsafe-char->integer #\1)
 
   (test-un -7.8 'unsafe-fl- 7.8)
@@ -345,8 +352,12 @@
   (test-bin 8 'unsafe-fxlshift 8 0)
 
   (test-bin 2 'unsafe-fxrshift 32 4)
+  (test-bin -1 'unsafe-fxrshift -1 2)
   (test-bin 8 'unsafe-fxrshift 32 2)
   (test-bin 8 'unsafe-fxrshift 8 0)
+  (test-bin 2 'unsafe-fxrshift/logical 32 4)
+  (test-bin -1 'unsafe-fxrshift/logical -1 0)
+  (test-bin (most-positive-fixnum) 'unsafe-fxrshift/logical -1 1)
 
   (test-un 5 unsafe-fxabs 5)
   (test-un 5 unsafe-fxabs -5)
@@ -614,6 +625,29 @@
   (test-un 3 'unsafe-vector-length (chaperone-vector #(1 5 7)
                                                      (lambda (v i x) x)
                                                      (lambda (v i x) x)))
+  (test-tri #(5 7) 'unsafe-vector-copy #(1 5 7) 1 3)
+  (test-tri #(5 7) 'unsafe-vector*-copy #(1 5 7) 1 3)
+  (test-tri #(5 7) 'unsafe-vector-copy (chaperone-vector #(1 5 7)
+                                                         (lambda (v i x) x)
+                                                         (lambda (v i x) x))
+            1
+            3)
+  (test-tri #(1 3 7) 'unsafe-vector-set/copy #(1 5 7) 1 3)
+  (test-tri #(1 3 7) 'unsafe-vector*-set/copy #(1 5 7) 1 3)
+  (test-tri #(1 3 7) 'unsafe-vector-set/copy (chaperone-vector #(1 5 7)
+                                                               (lambda (v i x) x)
+                                                               (lambda (v i x) x))
+            1
+            3)
+  (test-bin #(1 5 a b c) 'unsafe-vector-append #(1 5) #(a b c))
+  (test-bin #(1 5 a b c) 'unsafe-vector*-append #(1 5) #(a b c))
+  (test-bin #(1 5 a b c) 'unsafe-vector-append
+            (chaperone-vector #(1 5)
+                              (lambda (v i x) x)
+                              (lambda (v i x) x))
+            (chaperone-vector #(a b c)
+                              (lambda (v i x) x)
+                              (lambda (v i x) x)))
 
   (test-bin 53 'unsafe-bytes-ref #"157" 1)
   (test-un 3 'unsafe-bytes-length #"157")
@@ -1039,6 +1073,8 @@
     (test #f immutable? (make-bytes 0))
     (test #t immutable? (unsafe-string->immutable-string! (make-string 0)))
     (test #f immutable? (make-string 0))
+    (test #t immutable? (unsafe-string->immutable-string! (string-append)))
+    (test #f immutable? (string-append))
     (test #t immutable? (unsafe-vector*->immutable-vector! (make-vector 0)))
     (test #f immutable? (make-vector 0))))
 
@@ -1089,6 +1125,21 @@
   (test 7 (dynamic-require ''claims-unreachable-parts/unsafe 'f1) (arity-at-least 7))
   (test 7 (dynamic-require ''claims-unreachable-parts/unsafe 'f2) (arity-at-least 7)))
   
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Make sure safe code is not inclined into an unsafe context
+
+(module unsafe-module-that-provides-do-unsafe racket/base
+  (#%declare #:unsafe)
+  (provide do-unsafe)
+  (define (do-unsafe f) (f)))
+
+(module safe-module-that-uses-do-unsafe racket/base
+  (require 'unsafe-module-that-provides-do-unsafe)
+  (do-unsafe (lambda () (car 5))))
+
+(err/rt-test/once (dynamic-require ''safe-module-that-uses-do-unsafe #f)
+                  exn:fail:contract?)
+
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (report-errs)

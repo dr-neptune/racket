@@ -67,14 +67,16 @@ For @tech{fixnums}: Unchecked versions of @racket[fx+], @racket[fx-],
 @defproc[(unsafe-fxnot [a fixnum?]) fixnum?]
 @defproc[(unsafe-fxlshift [a fixnum?] [b fixnum?]) fixnum?]
 @defproc[(unsafe-fxrshift [a fixnum?] [b fixnum?]) fixnum?]
+@defproc[(unsafe-fxrshift/logical [a fixnum?] [b fixnum?]) fixnum?]
 )]{
 
 For @tech{fixnums}: Unchecked versions of @racket[fxand], @racket[fxior], @racket[fxxor],
-@racket[fxnot], @racket[fxlshift], and @racket[fxrshift].
+@racket[fxnot], @racket[fxlshift], @racket[fxrshift], and @racket[fxrshift/logical].
 
 @history[#:changed "7.0.0.13" @elem{Allow zero or more arguments for
                                     @racket[unsafe-fxand], @racket[unsafe-fxior],
-                                    and @racket[unsafe-fxxor].}]}
+                                    and @racket[unsafe-fxxor].}
+        #:changed "8.8.0.5" @elem{Added @racket[unsafe-fxrshift/logical].}]}
 
 @deftogether[(
 @defproc[(unsafe-fxpopcount [a (and/c fixnum? (not/c negative?))]) fixnum?]
@@ -317,11 +319,10 @@ Some pitfalls of using @racket[unsafe-set-immutable-car!] and
 @history[#:added "7.9.0.18"]}
 
 @deftogether[(
-@defproc[(unsafe-unbox [b box?]) fixnum?]
-@defproc[(unsafe-set-box! [b box?] [k fixnum?]) void?]
+@defproc[(unsafe-unbox [b box?]) any/c]
+@defproc[(unsafe-set-box! [b box?] [k any/c]) void?]
 @defproc[(unsafe-unbox* [v (and/c box? (not/c impersonator?))]) any/c]
-@defproc[(unsafe-set-box*! [v (and/c box? (not/c impersonator?))] [val any/c]) void?]
-)]{
+@defproc[(unsafe-set-box*! [v (and/c box? (not/c impersonator?))] [val any/c]) void?])]{
 
 Unsafe versions of @racket[unbox] and @racket[set-box!], where the
 @schemeidfont{box*} variants can be faster but do not work on
@@ -336,20 +337,30 @@ Unsafe versions of @racket[unbox] and @racket[set-box!], where the
 @defproc[(unsafe-vector-length [v vector?]) fixnum?]
 @defproc[(unsafe-vector-ref [v vector?] [k fixnum?]) any/c]
 @defproc[(unsafe-vector-set! [v vector?] [k fixnum?] [val any/c]) void?]
+@defproc[(unsafe-vector-copy [v vector?] [start fixnum? 0] [end fixnum? (vector-length v)]) vector?]
+@defproc[(unsafe-vector-set/copy [v vector?] [pos fixnum? 0] [val any/c]) vector?]
+@defproc[(unsafe-vector-append [v vector?] ...) vector?]
 @defproc[(unsafe-vector*-length [v (and/c vector? (not/c impersonator?))]) fixnum?]
 @defproc[(unsafe-vector*-ref [v (and/c vector? (not/c impersonator?))] [k fixnum?]) any/c]
 @defproc[(unsafe-vector*-set! [v (and/c vector? (not/c impersonator?))] [k fixnum?] [val any/c]) void?]
 @defproc[(unsafe-vector*-cas! [v (and/c vector? (not/c impersonator?))] [k fixnum?] [old-val any/c] [new-val any/c]) boolean?]
+@defproc[(unsafe-vector*-copy [v vector?] [start fixnum? 0] [end fixnum? (vector-length v)]) vector?]
+@defproc[(unsafe-vector*-set/copy [v vector?] [pos fixnum?] [val any/c]) vector?]
+@defproc[(unsafe-vector*-append [v vector?] ...) vector?]
 )]{
 
 Unsafe versions of @racket[vector-length], @racket[vector-ref],
-@racket[vector-set!], and @racket[vector-cas!], where the @schemeidfont{vector*} variants can be
+@racket[vector-set!], @racket[vector-cas!], @racket[vector-copy], @racket[vector-set/copy],
+and @racket[vector-append], where the @schemeidfont{vector*} variants can be
 faster but do not work on @tech{impersonators}.
 
 A vector's size can never be larger than a @tech{fixnum}, so even
 @racket[vector-length] always returns a fixnum.
 
-@history[#:changed "6.11.0.2" @elem{Added @racket[unsafe-vector*-cas!].}]}
+@history[#:changed "6.11.0.2" @elem{Added @racket[unsafe-vector*-cas!].}
+         #:changed "8.11.1.9" @elem{Added @racket[unsafe-vector-copy], @racket[unsafe-vector*-copy],
+                                    @racket[unsafe-vector-set/copy], @racket[unsafe-vector*-set/copy],
+                                    @racket[unsafe-vector-append], and @racket[unsafe-vector*-append].}]}
 
 
 @defproc[(unsafe-vector*->immutable-vector! [v (and/c vector? (not/c impersonator?))]) (and/c vector? immutable?)]{

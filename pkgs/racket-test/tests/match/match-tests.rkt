@@ -3,6 +3,160 @@
            (for-syntax racket/base))
   
   (provide match-tests)
+
+  (define regexp-tests
+    (test-suite "Tests for regexp and pregexp"
+      (test-case "regexp"
+        ;; string
+        (check-false
+         (match "banana"
+           [(regexp "(na){2}") #t]
+           [_ #f]))
+        ;; #rx
+        (check-false
+         (match "banana"
+           [(regexp #rx"(na){2}") #t]
+           [_ #f]))
+        ;; #px
+        (check-true
+         (match "banana"
+           [(regexp #px"(na){2}") #t]
+           [_ #f]))
+        ;; byte string
+        (check-false
+         (match #"banana"
+           [(regexp #"(na){2}") #t]
+           [_ #f]))
+        ;; #rx#
+        (check-false
+         (match #"banana"
+           [(regexp #rx#"(na){2}") #t]
+           [_ #f]))
+        ;; #px#
+        (check-true
+         (match #"banana"
+           [(regexp #px#"(na){2}") #t]
+           [_ #f])))
+
+      (test-case "regexp side-effect"
+        (define cnt 0)
+
+        (check-true
+         (match "banana"
+           [(regexp (begin (set! cnt (add1 cnt)) "nan")) #t]
+           [_ #f]))
+        (check-equal? cnt 1)
+
+        (check-false
+         (match "banana"
+           [(regexp (begin (set! cnt (add1 cnt)) "inf")) #t]
+           [_ #f]))
+        (check-equal? cnt 2))
+
+      (test-case "pregexp"
+        ;; string
+        (check-true
+         (match "banana"
+           [(pregexp "(na){2}") #t]
+           [_ #f]))
+        ;; #rx
+        (check-exn exn:fail:contract?
+                   (λ ()
+                     (match "banana"
+                       [(pregexp #rx"(na){2}") #t]
+                       [_ #f])))
+        ;; #px
+        (check-true
+         (match "banana"
+           [(pregexp #px"(na){2}") #t]
+           [_ #f]))
+        ;; byte string
+        (check-true
+         (match #"banana"
+           [(pregexp #"(na){2}") #t]
+           [_ #f]))
+        ;; #rx#
+        (check-exn exn:fail:contract?
+                   (λ ()
+                     (match #"banana"
+                       [(pregexp #rx#"(na){2}") #t]
+                       [_ #f])))
+        ;; #px#
+        (check-true
+         (match #"banana"
+           [(pregexp #px#"(na){2}") #t]
+           [_ #f])))
+
+      (test-case "pregexp side-effect"
+        (define cnt 0)
+
+        (check-true
+         (match "banana"
+           [(pregexp (begin (set! cnt (add1 cnt)) "nan")) #t]
+           [_ #f]))
+        (check-equal? cnt 1)
+
+        (check-false
+         (match "banana"
+           [(pregexp (begin (set! cnt (add1 cnt)) "inf")) #t]
+           [_ #f]))
+        (check-equal? cnt 2))))
+
+  (define option-tests
+    (test-suite "Tests for clause options"
+      (test-case "#:do and #:when"
+        (define (f xs)
+          (match xs
+            [(list a b)
+             #:do [(define sum (+ a b))
+                   (define sum^2 (* sum sum))]
+             #:when (< sum^2 50)
+             #:do [(define sum^2+1 (add1 sum^2))]
+             sum^2+1]
+            [_ 'no-match]))
+
+        (check-equal? (f (list 3 4)) 50)
+        (check-equal? (f (list 4 4)) 'no-match))
+
+      (test-case "=> scope"
+        (define (f xs)
+          (match xs
+            [(list a b)
+             (=> exit)
+             #:do [(when (= a b)
+                     (exit))]
+             a]
+            [_ 'no-match]))
+
+        (check-equal? (f (list 5 5)) 'no-match)
+        (check-equal? (f (list 5 6)) 5))
+
+      (test-case "define/match"
+        (define/match (f xs)
+          [((list a b))
+           #:do [(define sum (+ a b))
+                 (define sum^2 (* sum sum))]
+           #:when (< sum^2 50)
+           #:do [(define sum^2+1 (add1 sum^2))]
+           sum^2+1]
+          [(_) 'no-match])
+
+        (check-equal? (f (list 3 4)) 50)
+        (check-equal? (f (list 4 4)) 'no-match))
+
+      (test-case "match*"
+        (define (f xs)
+          (match* (xs)
+            [((list a b))
+             #:do [(define sum (+ a b))
+                   (define sum^2 (* sum sum))]
+             #:when (< sum^2 50)
+             #:do [(define sum^2+1 (add1 sum^2))]
+             sum^2+1]
+            [(_) 'no-match]))
+
+        (check-equal? (f (list 3 4)) 50)
+        (check-equal? (f (list 4 4)) 'no-match))))
   
   (define match-expander-tests
     (test-suite
@@ -51,178 +205,7 @@
                        [_ "non-empty"])
                      "empty"))
      ))
-
-  (define hash-table-no-rep-tests
-    (test-suite "hash-table patterns (no ..k)"
-      (test-case "literal keys"
-        (check-equal? (match (hash 1 2 3 4)
-                        [(hash-table (1 a) (3 b))
-                         (list a b)])
-                      '(2 4))
-
-        (check-equal? (match (hash 'a 'b 'c 'd)
-                        [(hash-table ('c x) ('a y))
-                         (list x y)])
-                      '(d b))
-
-        (check-true (match (hash)
-                      [(hash-table) #t]))
-
-        (check-equal? (match (hash "a" "b" "c" "d" "e" "f")
-                        [(hash-table ("e" x) ("a" "b") ("c" y))
-                         (list x y)])
-                      '("f" "d")))
-
-      (test-case "literal keys predicate"
-        (check-equal? (match (hash 'a 'b 'c 'd)
-                        [(hash-table ('a x)) 1]
-                        [(hash-table ('a x) ('c y)) 2])
-                      2)
-
-        (check-equal? (match (hash 1 2 3 4)
-                        [(hash-table) 1]
-                        [(hash-table (1 a)) 2]
-                        [(hash-table (2 a)) 3]
-                        [(hash-table (1 a) (3 b) (5 c)) 4]
-                        [(hash-table (1 a) (2 b)) 5]
-                        [(hash-table (1 10) (3 b)) 6]
-                        [(hash-table (1 a) (3 b)) 7]
-                        [(hash-table (1 a) (3 4)) 8])
-                      7)
-
-        ;; Duplicate keys
-        (check-equal? (match (hash "a" "b" "c" "d")
-                        [(hash-table ("a" x) ("a" y))
-                         (list x y)]
-                        [(hash-table _ _) 42])
-                      42))
-
-      (test-case "non literal keys"
-        (check-equal? (match (hash (list 1 2) 'b (list 3 4) 'd)
-                        [(hash-table ((list 1 2) x) ((list 3 4) y)) (list x y)])
-                      '(b d))
-
-        (check-equal? (match (hash (list 1 2) 'b (list 3 4) 'd)
-                        [(hash-table (c d) (a 'b)) (list a c d)])
-                      '((1 2) (3 4) d))
-
-        (check-equal? (match (hash (list 1 2) 'b (list 3 4) 'd)
-                        [(hash-table p (a 'b)) (list a p)])
-                      '((1 2) ((3 4) d)))
-
-        (check-equal? (match (hash (list 1 2) 'x (list 3 4) 'x)
-                        [(hash-table _ q) (cadr q)])
-                      'x))
-
-      (test-case "non literal keys predicate"
-        (check-equal? (match (hash (list 1 2) 'b (list 3 4) 'd)
-                        [(hash-table) 1]
-                        [(hash-table a) 2]
-                        [(hash-table a b c) 3]
-                        [(hash-table a b) 4]
-                        [(hash-table (p 'd) _) p])
-                      4)
-
-        (check-equal? (match (hash (list 1 2) 'b (list 3 4) 'd)
-                        [(hash-table) 1]
-                        [(hash-table a) 2]
-                        [(hash-table a b c) 3]
-                        [(hash-table (p 'd) _) p]
-                        [(hash-table a b) 4])
-                      (list 3 4)))))
-
-  (define hash-table-rep-tests
-    (test-suite "hash-table patterns (with ..k)"
-      (test-case "literal keys"
-        (check-equal? (match (hash 1 2 3 4 5 6)
-                        [(hash-table (3 b) (5 c) (1 a) _ ...)
-                         (list a b c)])
-                      '(2 4 6))
-
-        (check-equal? (match (hash 1 2 3 4 5 6)
-                        [(hash-table (3 a) (5 b) _ ...)
-                         (list a b)])
-                      '(4 6))
-
-        (check-equal? (match (hash 1 2 3 4 5 6)
-                        [(hash-table (3 a) (5 b) (_ _) ...)
-                         (list a b)])
-                      '(4 6))
-
-        ;; Duplicate keys are fine
-        (check-equal? (match (hash 1 2 3 4 5 6)
-                        [(hash-table (3 a) (3 b) _ ...)
-                         (list a b)])
-                      '(4 4))
-
-        (check-true (match (hash 1 2 3 4 5 6)
-                      [(hash-table _ ...) #t]))
-
-        (check-true (match (hash 1 2 3 4 5 6)
-                      [(hash-table (1 2) _ ...) #t])))
-
-      (test-case "literal keys predicate"
-        (check-equal? (match (hash 1 2 3 4 5 6)
-                        [(hash-table (3 42) (5 b) _ ...) #f]
-                        [(hash-table (5 b) _ ...) b])
-                      6)
-
-        (check-equal? (match (hash 1 2 3 4 5 6)
-                        [(hash-table (1 _) (3 _) (5 _) (7 _) _ ...) #f]
-                        [(hash-table (2 _) _ ...) #f]
-                        [(hash-table (5 b) _ ...) b])
-                      6))
-
-      (test-case "non literal keys"
-        (check-equal? (match (hash 1 2 3 4 5 6)
-                        [(hash-table (3 42) (5 b) _ ...) #f]
-                        [(hash-table (5 b) _ ...) b])
-                      6)
-
-        (check-equal? (match (hash 1 2 3 4 5 6)
-                        [(hash-table (a 2) _ ...) a])
-                      1)
-
-        (check-true (match (hash 1 2 3 4)
-                      [(hash-table p _ _ ...) #t]))
-
-
-        (check-equal? (match (hash 1 2 3 4)
-                        [(hash-table (1 x) _ ...) x])
-                      2)
-
-        (check-equal? (match (hash 1 2 3 4)
-                        [(hash-table (1 x) _ ..0) x])
-                      2)
-
-        (check-equal? (match (hash 1 2 3 4)
-                        [(hash-table (1 x) _ ..1) x])
-                      2)
-
-        (check-equal? (match (hash 1 2 3 4)
-                        [(hash-table (1 x) p ...) p])
-                      (list (list 3 4)))
-
-        (check-equal? (match (hash 1 2)
-                        [(hash-table (1 x) p ...) p])
-                      '()))
-
-      (test-case "non literal keys predicate"
-        (check-equal? (match (hash 1 2 3 4 5 6)
-                        [(hash-table _ ..4) 1]
-                        [(hash-table _ ..3) 2])
-                      2)
-
-        (check-equal? (match (hash 1 2 3 4 5 6)
-                        [(hash-table a b c d _ ...) 1]
-                        [(hash-table a b c _ ...) 2])
-                      2)
-
-        (check-equal? (match (hash 1 2 3 4 5 6)
-                        [(hash-table (_ 10) b c _ ...) 1]
-                        [(hash-table a b c _ ...) 2])
-                      2))))
-
+  
   (define nonlinear-tests
     (test-suite 
      "Non-linear patterns"
@@ -303,10 +286,10 @@
 
   (define match-tests
     (test-suite "Tests for match.rkt"
-                     doc-tests
-                     simple-tests
-                     nonlinear-tests
-                     match-expander-tests
-                     hash-table-no-rep-tests
-                     hash-table-rep-tests))
+      regexp-tests
+      option-tests
+      doc-tests
+      simple-tests
+      nonlinear-tests
+      match-expander-tests))
   )

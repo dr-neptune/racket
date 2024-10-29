@@ -2,7 +2,8 @@
 @(require "mz.rkt"
           racket/class
           (for-syntax racket/base racket/serialize racket/trait)
-          (for-label racket/serialize))
+          (for-label racket/serialize
+                     racket/trait))
 
 @(begin
 
@@ -372,7 +373,9 @@ Each @racket[class-clause] is (partially) macro-expanded to reveal its
 shapes. If a @racket[class-clause] is a @racket[begin] expression, its
 sub-expressions are lifted out of the @racket[begin] and treated as
 @racket[class-clause]s, in the same way that @racket[begin] is
-flattened for top-level and embedded definitions.
+flattened for top-level and embedded definitions. Each @racket[class-clause]
+has the @tech{syntax property} @racket['class-body] set to true before
+expansion.
 
 Within a @racket[class*] form for instances of the new class,
 @racket[this] is bound to the object itself;
@@ -384,6 +387,10 @@ available for calling superclass methods (see
 @secref["clmethoddefs"]); and @racket[inner] is available for
 calling subclass augmentations of methods (see
 @secref["clmethoddefs"]).}
+
+@history[#:changed "8.8.0.10"
+         @elem{Added the @racket['class-body] syntax property
+          to class body forms.}]
 
 @defform[(class superclass-expr class-clause ...)]{
 
